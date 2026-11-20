@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nexacore
+      POSTGRES_USER: nexacore
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexacore_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - nexacore-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexacore -d nexacore"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  nexacore-postgres:
