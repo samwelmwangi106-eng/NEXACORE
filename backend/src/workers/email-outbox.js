@@ -1,4 +1,5 @@
 require('dotenv').config();
+const crypto = require('node:crypto');
 const { loadConfig } = require('../config/env');
 const { createPrismaClient } = require('../lib/prisma');
 const { createMailer } = require('../modules/auth/mailer');
@@ -9,13 +10,18 @@ async function startWorker() {
   const prisma = createPrismaClient(config.databaseUrl);
   const mailer = createMailer(config, console);
   await prisma.$connect();
+
+  // Lease fencing identity for this process. Stamped on every claimed row so a
+  // worker whose lease was taken over cannot complete another worker's job.
+  const workerToken = crypto.randomUUID();
+
   let stopping = false;
   process.on('SIGINT', function stopOnInterrupt() { stopping = true; });
   process.on('SIGTERM', function stopOnTerminate() { stopping = true; });
   console.info('NexaCore email outbox worker started');
   try {
     while (!stopping) {
-      const result = await processNextEmail(prisma, mailer, config, console);
+      const result = await processNextEmail(prisma, mailer, config, console, workerToken);
       if (!result.processed) await new Promise(function wait(resolve) { setTimeout(resolve, 1000); });
     }
   } finally {

@@ -3,6 +3,10 @@
 .env.*
 !.env.example
 !.env.*.example
+# Key material and other secret drops must never be committed
+*_key.txt
+*_key
+secrets/
 
 node_modules/
 coverage/

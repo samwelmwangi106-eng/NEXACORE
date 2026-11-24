@@ -40,6 +40,29 @@ enum EmailDeliveryStatus {
   FAILED
 }
 
+enum AcademicYearStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+}
+
+enum SchoolTermStatus {
+  PLANNED
+  ACTIVE
+  COMPLETED
+}
+
+enum SchoolGradeLevelStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum SchoolClassSectionStatus {
+  PLANNED
+  ACTIVE
+  CLOSED
+}
+
 model User {
   id                 String               @id @default(uuid()) @db.Uuid
   email              String               @unique @db.VarChar(320)
@@ -76,6 +99,10 @@ model Organisation {
   memberRoles  MemberRole[]
   invitations OrganisationInvitation[]
   auditLogs    AuditLog[]
+  schoolProfile SchoolProfile?
+  schoolYears   SchoolAcademicYear[]
+  schoolGrades  SchoolGradeLevel[]
+  schoolSections SchoolClassSection[]
 
   @@index([industry, status])
   @@map("organisations")
@@ -129,7 +156,7 @@ model MemberRole {
   roleId         String             @map("role_id") @db.Uuid
   organisation   Organisation       @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   member         OrganisationMember @relation(fields: [memberId, organisationId], references: [id, organisationId], onDelete: Cascade)
-  role           Role               @relation(fields: [roleId, organisationId], references: [id, organisationId], onDelete: Cascade)
+  role           Role               @relation(fields: [roleId, organisationId], references: [id], onDelete: Cascade)
 
   @@id([memberId, roleId])
   @@index([organisationId, roleId])
@@ -187,7 +214,7 @@ model OrganisationInvitation {
   revokedAt      DateTime?     @map("revoked_at") @db.Timestamptz(6)
   createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   organisation   Organisation  @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  role           Role          @relation(fields: [roleId, organisationId], references: [id, organisationId], onDelete: Restrict)
+  role           Role          @relation(fields: [roleId, organisationId], references: [id], onDelete: Restrict)
   invitedBy      User          @relation("InvitationActor", fields: [invitedById], references: [id], onDelete: Restrict)
 
   @@index([organisationId, email, expiresAt])
@@ -203,6 +230,7 @@ model EmailOutbox {
   attempts        Int                 @default(0)
   nextAttemptAt   DateTime            @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
   lockedAt        DateTime?           @map("locked_at") @db.Timestamptz(6)
+  lockToken       String?             @map("lock_token") @db.Uuid
   deliveredAt     DateTime?           @map("delivered_at") @db.Timestamptz(6)
   lastError       String?             @map("last_error") @db.VarChar(500)
   createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -251,4 +279,95 @@ model AuditLog {
   @@index([actorUserId, createdAt])
   @@index([entityType, entityId])
   @@map("audit_logs")
+}
+
+model SchoolProfile {
+  id             String       @id @default(uuid()) @db.Uuid
+  organisationId String       @unique @map("organisation_id") @db.Uuid
+  schoolCode     String?      @map("school_code") @db.VarChar(40)
+  timeZone       String       @default("Africa/Nairobi") @map("time_zone") @db.VarChar(80)
+  weekStartsOn   Int          @default(1) @map("week_starts_on")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@unique([organisationId, schoolCode])
+  @@map("school_profiles")
+}
+
+model SchoolAcademicYear {
+  id             String             @id @default(uuid()) @db.Uuid
+  organisationId String             @map("organisation_id") @db.Uuid
+  name           String             @db.VarChar(100)
+  startsOn       DateTime           @map("starts_on") @db.Date
+  endsOn         DateTime           @map("ends_on") @db.Date
+  status         AcademicYearStatus @default(DRAFT)
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  organisation   Organisation       @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  terms          SchoolTerm[]
+  sections       SchoolClassSection[]
+
+  @@unique([id, organisationId])
+  @@unique([organisationId, name])
+  @@index([organisationId, status, startsOn])
+  @@map("school_academic_years")
+}
+
+model SchoolTerm {
+  id             String          @id @default(uuid()) @db.Uuid
+  organisationId String          @map("organisation_id") @db.Uuid
+  academicYearId String          @map("academic_year_id") @db.Uuid
+  name           String          @db.VarChar(80)
+  sequence       Int
+  startsOn       DateTime        @map("starts_on") @db.Date
+  endsOn         DateTime        @map("ends_on") @db.Date
+  status         SchoolTermStatus @default(PLANNED)
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  academicYear   SchoolAcademicYear @relation(fields: [academicYearId, organisationId], references: [id, organisationId], onDelete: Restrict)
+
+  @@unique([id, organisationId])
+  @@unique([organisationId, academicYearId, name])
+  @@unique([organisationId, academicYearId, sequence])
+  @@index([organisationId, academicYearId, startsOn])
+  @@map("school_terms")
+}
+
+model SchoolGradeLevel {
+  id             String                 @id @default(uuid()) @db.Uuid
+  organisationId String                 @map("organisation_id") @db.Uuid
+  name           String                 @db.VarChar(80)
+  code           String                 @db.VarChar(20)
+  sortOrder      Int                    @default(1) @map("sort_order")
+  status         SchoolGradeLevelStatus @default(ACTIVE)
+  createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
+  organisation   Organisation           @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  sections       SchoolClassSection[]
+
+  @@unique([id, organisationId])
+  @@unique([organisationId, name])
+  @@unique([organisationId, code])
+  @@index([organisationId, status, sortOrder])
+  @@map("school_grade_levels")
+}
+
+model SchoolClassSection {
+  id             String                    @id @default(uuid()) @db.Uuid
+  organisationId String                    @map("organisation_id") @db.Uuid
+  academicYearId String                    @map("academic_year_id") @db.Uuid
+  gradeLevelId   String                    @map("grade_level_id") @db.Uuid
+  name           String                    @db.VarChar(80)
+  status         SchoolClassSectionStatus  @default(PLANNED)
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  organisation   Organisation              @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  academicYear   SchoolAcademicYear        @relation(fields: [academicYearId, organisationId], references: [id, organisationId], onDelete: Restrict)
+  gradeLevel     SchoolGradeLevel          @relation(fields: [gradeLevelId, organisationId], references: [id, organisationId], onDelete: Restrict)
+
+  @@unique([id, organisationId])
+  @@unique([organisationId, academicYearId, gradeLevelId, name])
+  @@index([organisationId, academicYearId, status])
+  @@map("school_class_sections")
 }

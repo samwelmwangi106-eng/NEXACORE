@@ -83,10 +83,17 @@ test.before(async function startPostgresIntegrationDatabase() {
   await migrationClient.connect();
   try {
     const migrationDirectory = path.join(__dirname, '../../prisma/migrations');
+    const expectedMigrations = (await fs.readdir(migrationDirectory, { withFileTypes: true }))
+      .filter(function isMigrationDir(entry) { return entry.isDirectory(); })
+      .map(function directoryName(entry) { return entry.name; })
+      .sort();
     const migrationResults = await applyMigrations(migrationClient, migrationDirectory);
-    assert.deepEqual(migrationResults.map(function status(item) { return item.status; }), ['applied']);
+    assert.equal(migrationResults.length, expectedMigrations.length);
+    assert.deepEqual(migrationResults.map(function status(item) { return item.status; }), expectedMigrations.map(function applied() { return 'applied'; }));
+    assert.deepEqual(migrationResults.map(function identifier(item) { return item.migrationName; }), expectedMigrations);
     const repeatedDeployment = await applyMigrations(migrationClient, migrationDirectory);
-    assert.deepEqual(repeatedDeployment.map(function status(item) { return item.status; }), ['already-applied']);
+    assert.equal(repeatedDeployment.length, expectedMigrations.length);
+    assert.deepEqual(repeatedDeployment.map(function status(item) { return item.status; }), expectedMigrations.map(function skipped() { return 'already-applied'; }));
   } finally {
     await migrationClient.end();
   }

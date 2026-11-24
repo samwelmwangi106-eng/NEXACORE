@@ -1,3 +1,5 @@
+const { permissionAppliesToIndustry } = require('../config/permissions');
+
 function createRequireTenant(prisma) {
   return async function requireTenant(req, res, next) {
     const organisationId = req.params.organisationId;
@@ -33,7 +35,13 @@ function createRequireTenant(prisma) {
         membershipId: membership.id,
         roles: new Set(membership.assignments.map(function roleName(assignment) { return assignment.role.name; })),
         permissions: new Set(membership.assignments.flatMap(function permissionKeys(assignment) {
-          return assignment.role.permissions.map(function key(item) { return item.permission.key; });
+          return assignment.role.permissions
+            .map(function key(item) { return item.permission.key; })
+            // Industry-scoped permissions never surface for an organisation whose
+            // industry they do not apply to, even if the role grants them.
+            .filter(function industryAllowed(key) {
+              return permissionAppliesToIndustry(key, membership.organisation.industry);
+            });
         })),
       };
       return next();
