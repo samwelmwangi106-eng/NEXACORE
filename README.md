@@ -122,11 +122,23 @@ School routes require the `school.read` / `school.manage` permissions and are ad
 
 Invitation signup is bound to the invitation email, selected organisation and role, and creates a pending account that must still verify its email. Organisation admins cannot assign a role containing permissions they do not have.
 
+Invitation lifecycle error contract:
+
+| Condition | Status | `error.code` |
+|---|---|---|
+| Duplicate live invitation for the same email (Prisma `P2002`) | 409 | `INVITATION_ALREADY_EXISTS` |
+| Invitation expired, already accepted, or revoked | 400 | `INVALID_INVITATION` |
+| Acceptance email differs from the invited address | 400 | `INVITATION_EMAIL_MISMATCH` |
+| Target organisation is suspended or its status is not `ACTIVE` | 403 | `ORGANISATION_NOT_ELIGIBLE` |
+| Email already has an account | 409 | `INVITATION_REQUIRES_UNREGISTERED_EMAIL` |
+| Role absent from the organisation | 404 | `ROLE_NOT_FOUND` |
+| Role carries permissions the inviter lacks | 403 | `ROLE_PERMISSION_ESCALATION` |
+
 An organisation must always retain at least one active owner. Because that guard is a read-then-write, ownership mutations take a per-organisation transaction-scoped advisory lock (`pg_advisory_xact_lock`) so two concurrent suspensions cannot each observe the other owner and both commit. Organisation settings are validated against an allowlist (`src/modules/organisations/organisation.settings.js`) and merged over the stored value rather than replaced, so a partial `PATCH` cannot wipe unrelated settings or introduce unknown keys.
 
 ## Tests and verification evidence
 
-- `npm test`: 49 of 55 tests pass. The 6 remaining failures are the PostgreSQL integration suite and all share one cause: `@prisma/client did not initialize yet`, because `prisma generate` cannot download its query-engine binary from `binaries.prisma.sh` in the current sandbox. They are an environment blocker, not a code defect.
+- `npm test`: **74 tests, 68 pass, 6 fail.** The 6 remaining failures are exactly the PostgreSQL integration suite and all share one cause: `@prisma/client did not initialize yet`, because `prisma generate` cannot download its native engine from `binaries.prisma.sh` in the current sandbox. They are an environment blocker, not a code defect, and are not reported as passing.
 - Unit, API, and tenant suites pass in full, including: last-owner protection, permission-escalation refusal, system-role immutability, tenant scoping, outbox encryption/retry/terminal-failure handling, and organisation settings validation.
 - `npm run test:integration` (6 tests, PostgreSQL 17 via `embedded-postgres`) exercises real authentication and immediate access revocation, membership/tenant isolation, backend role permissions, invitation encryption/email binding/expiry/single use, platform-admin separation, unique identity constraints, and composite foreign-key rejection across tenants. **These require a generated Prisma client and are the 6 currently blocked tests.**
 - SQL migrations were verified by applying all four against a fresh real PostgreSQL 17 cluster: each applies once and is reported `already-applied` on a second run.
@@ -134,7 +146,25 @@ An organisation must always retain at least one active owner. Because that guard
   - 8 concurrent accepts of one invitation token → exactly 1 winner; replays rejected.
   - 6 concurrent invitations using case variants of one address → exactly 1 created, 5 rejected (`23505`).
   - Two owners suspended concurrently → 1 succeeds, 1 blocked, 1 owner retained (after the advisory-lock fix below).
+  - Two owners **demoted** concurrently → 1 `demoted`, 1 `blocked(LAST_OWNER_REQUIRED)`, 1 owner retained.
+  - The `pg_advisory_xact_lock` statement was executed through the real `@prisma/adapter-pg` driver adapter, and a second session observed the advisory lock count go `0 -> 1 -> 0` across `BEGIN`/`COMMIT`, confirming the lock is transaction-scoped and not held indefinitely.
 - `prisma migrate deploy` through Prisma's JS schema engine remains blocked by the adapter deserialization error described above. The checked-in SQL deploy runner is the verified path; do not report native Prisma migration deployment as verified.
+
+## Secret exposure investigation (`.env_key.txt`)
+
+`backend/.env_key.txt` holds the local email-outbox encryption key. It was investigated rather than merely gitignored:
+
+- **Tracked files:** the only environment file ever committed is `backend/.env.example`. No `*_key*` or `secrets/` path is tracked.
+- **Local history:** across every commit reachable from any local ref, `.env_key.txt` was never added; a full-tree listing of each commit and a scan of every blob's contents found no reference to the filename.
+- **Remote history:** all remote branches (`main`, `feature/nexacore-platform-foundation`, `feature/nexacore-shared-platform-hardening`, `arena/8c9954b6-nexacore`, `arena/cb50e821-nexacore`) were fetched and scanned the same way. The filename appears in no commit tree and in no file content. There are no tags.
+- **Ignore rules:** `.gitignore` contains `*_key.txt`, `*_key`, and `secrets/`; `git check-ignore` confirms `.env_key.txt`, `.env_key`, and nested paths under `secrets/` are matched, and `git add -A --dry-run` stages no secret file.
+
+**Conclusion:** the key never entered this repository's history, local or remote, so there is nothing to purge. Rotation is therefore **not required by exposure through this repository**. It is still worth rotating if the same key value was ever shared another way (chat, email, a shared environment); that cannot be determined from the repository, and no secret value is reproduced here. `.gitignore` alone would not have resolved a historical leak — the guarantee comes from the history scan above, not from the ignore rules.
+
+## Documentation status
+
+- `README.md` (this file) and `backend/README.md` are current and describe only behaviour that was verified.
+- **There is no `frontend/` directory in this repository.** The frontend has not been created; the project is backend-only at this commit. No frontend README was written, because there is no frontend to document and inventing one would misrepresent the repository. Remaining frontend documentation work is therefore entirely ahead of the implementation: when the React/Vite client is added it will need its own README covering setup, environment variables, the API base URL, the auth/cookie flow, and the invitation/signup screens.
 
 ## Audit and sensitive operations
 

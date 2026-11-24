@@ -13,6 +13,7 @@ function ownerMembership() {
 test('an organisation cannot remove or suspend its last active owner', async function preserveLastOwner() {
   let statusUpdateCalled = false;
   const tx = {
+    $executeRaw: async function $executeRaw() { return 0; },
     organisationMember: {
       findFirst: async function findFirst() { return ownerMembership(); },
       update: async function update() { statusUpdateCalled = true; },
@@ -30,6 +31,7 @@ test('an organisation cannot remove or suspend its last active owner', async fun
 test('an administrator cannot suspend an owner even when another owner exists', async function onlyOwnerCanManageOwners() {
   let statusUpdateCalled = false;
   const tx = {
+    $executeRaw: async function $executeRaw() { return 0; },
     organisationMember: {
       findFirst: async function findFirst() { return ownerMembership(); },
       update: async function update() { statusUpdateCalled = true; },
@@ -47,6 +49,7 @@ test('an administrator cannot suspend an owner even when another owner exists', 
 test('an administrator cannot assign a role that grants permissions they lack', async function preventRoleEscalation() {
   let assignmentsDeleted = false;
   const tx = {
+    $executeRaw: async function $executeRaw() { return 0; },
     organisationMember: { findFirst: async function findFirst() {
       return { id: memberId, status: 'ACTIVE', assignments: [{ role: { name: 'Staff Member' } }] };
     } },
@@ -123,17 +126,26 @@ test('ownership mutations serialize on a per-organisation advisory lock', async 
   assert.equal(lockCalls.length, 1, 'role assignment must take the ownership lock');
 });
 
-test('ownership guard still works for clients without raw SQL support', async function lockOptional() {
+test('ownership mutation refuses to run when the advisory lock cannot be taken', async function lockFailsClosed() {
+  // A client without $executeRaw cannot serialize the read-then-write guard.
+  // The previous behaviour was to proceed unlocked; that silently reintroduced
+  // the lost-update race, so the mutation must now refuse instead.
+  let statusUpdateCalled = false;
   const tx = {
     organisationMember: {
       findFirst: async function findFirst() { return ownerMembership(); },
-      update: async function update() { throw new Error('must not update'); },
+      update: async function update() { statusUpdateCalled = true; },
     },
-    memberRole: { count: async function count() { return 0; } },
+    memberRole: { count: async function count() { return 5; } },
   };
   const prisma = { $transaction: async function transaction(callback) { return callback(tx); } };
   await assert.rejects(
     access.updateMemberStatus(prisma, 'actor', organisationId, memberId, 'SUSPENDED', new Set(['Organisation Owner']), 'request'),
-    function lastOwner(error) { return error.code === 'LAST_OWNER_REQUIRED'; },
+    function lockUnavailable(error) {
+      assert.equal(error.code, 'OWNERSHIP_LOCK_UNAVAILABLE');
+      assert.equal(error.status, 500);
+      return true;
+    },
   );
+  assert.equal(statusUpdateCalled, false, 'no membership write may happen without the lock');
 });

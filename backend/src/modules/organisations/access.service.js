@@ -76,13 +76,23 @@ async function getMembership(tx, organisationId, memberId) {
  * Without serialization two concurrent suspensions can both observe the other
  * owner as present and both commit, leaving an organisation with no owner.
  *
- * A transaction-scoped advisory lock keyed on the organisation makes the guard
- * atomic and is released automatically on COMMIT/ROLLBACK. It is skipped when
- * the client cannot execute raw SQL (e.g. lightweight unit-test doubles), which
- * keeps non-transactional callers working.
+ * `pg_advisory_xact_lock` is transaction-scoped and released automatically on
+ * COMMIT/ROLLBACK. The lock is keyed on a hash of the organisation id so
+ * unrelated tenants never contend with each other.
+ *
+ * This FAILS CLOSED. `$executeRaw` is a method on the PrismaClient base class,
+ * so a real client always has it; an absent method means a misconfigured or
+ * stubbed client, never a valid production state. Proceeding without the lock
+ * would silently reintroduce the race, so we refuse the mutation instead.
  */
 async function lockOrganisationOwnership(tx, organisationId) {
-  if (typeof tx.$executeRaw !== 'function') return;
+  if (!tx || typeof tx.$executeRaw !== 'function') {
+    throw new AppError(
+      500,
+      'OWNERSHIP_LOCK_UNAVAILABLE',
+      'Ownership changes require a client that can take an advisory lock; the operation was refused rather than applied unsafely',
+    );
+  }
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${organisationId}::text, 0))`;
 }
 

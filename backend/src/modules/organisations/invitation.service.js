@@ -6,6 +6,16 @@ const { recordAudit } = require('../audit/audit.service');
 
 const INVITATION_TTL_MS = 72 * 60 * 60 * 1000;
 
+// The partial unique index organisation_invitations_one_live_email_key raises
+// P2002 when a duplicate *live* invitation is attempted. Surface that as a
+// predictable 409 rather than letting it fall through as a generic 500.
+function rethrowInvitationConflict(error) {
+  if (error && error.code === 'P2002') {
+    throw new AppError(409, 'INVITATION_ALREADY_EXISTS', 'An active invitation already exists for this email address');
+  }
+  throw error;
+}
+
 function invitationLink(config, token) {
   const url = new URL('/accept-invitation', config.webOrigin);
   url.searchParams.set('token', token);
@@ -61,7 +71,7 @@ async function createInvitation(prisma, config, context, email, requestedRoleId)
       metadata: { email: normalizedEmail, roleId: role.id, expiresAt: expiresAt.toISOString() },
     });
     return { id: invitation.id, email: invitation.email, expiresAt: invitation.expiresAt, roleId: role.id };
-  });
+  }).catch(rethrowInvitationConflict);
 }
 
 async function acceptInvitation(prisma, config, invitationToken, registration) {
@@ -75,6 +85,11 @@ async function acceptInvitation(prisma, config, invitationToken, registration) {
   }
   if (normalizeEmail(registration.email) !== invitation.email) {
     throw new AppError(400, 'INVITATION_EMAIL_MISMATCH', 'The account email must match the invitation');
+  }
+  // A suspended organisation is not eligible to gain new members, even with a
+  // valid unexpired token. Checked before the transaction so no partial writes occur.
+  if (!invitation.organisation || invitation.organisation.status !== 'ACTIVE') {
+    throw new AppError(403, 'ORGANISATION_NOT_ELIGIBLE', 'This organisation is not currently accepting new members');
   }
   return prisma.$transaction(async function acceptInvitationTransaction(tx) {
     const consumed = await tx.organisationInvitation.updateMany({
