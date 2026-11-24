@@ -69,6 +69,23 @@ async function getMembership(tx, organisationId, memberId) {
   return membership;
 }
 
+/**
+ * Serialize ownership mutations for one organisation.
+ *
+ * The last-owner guard is a read-then-write ("does another owner still exist?").
+ * Without serialization two concurrent suspensions can both observe the other
+ * owner as present and both commit, leaving an organisation with no owner.
+ *
+ * A transaction-scoped advisory lock keyed on the organisation makes the guard
+ * atomic and is released automatically on COMMIT/ROLLBACK. It is skipped when
+ * the client cannot execute raw SQL (e.g. lightweight unit-test doubles), which
+ * keeps non-transactional callers working.
+ */
+async function lockOrganisationOwnership(tx, organisationId) {
+  if (typeof tx.$executeRaw !== 'function') return;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${organisationId}::text, 0))`;
+}
+
 async function ensureOwnerNotRemoved(tx, organisationId, membership, willRemainOwner) {
   const currentlyOwner = membership.assignments.some(function isOwner(assignment) {
     return assignment.role.name === 'Organisation Owner';
@@ -89,6 +106,7 @@ async function ensureOwnerNotRemoved(tx, organisationId, membership, willRemainO
 
 async function updateMemberStatus(prisma, actorUserId, organisationId, membershipId, status, actorRoles, requestId) {
   return prisma.$transaction(async function updateMemberStatusTransaction(tx) {
+    await lockOrganisationOwnership(tx, organisationId);
     const membership = await getMembership(tx, organisationId, membershipId);
     const targetIsOwner = membership.assignments.some(function isOwner(assignment) { return assignment.role.name === 'Organisation Owner'; });
     if (targetIsOwner && !actorRoles.has('Organisation Owner')) {
@@ -122,6 +140,7 @@ function actorCanAssignRole(role, actorPermissions, actorRoles) {
 
 async function setMemberRoles(prisma, actorUserId, organisationId, membershipId, roleIds, actorPermissions, actorRoles, requestId) {
   return prisma.$transaction(async function setMemberRolesTransaction(tx) {
+    await lockOrganisationOwnership(tx, organisationId);
     const membership = await getMembership(tx, organisationId, membershipId);
     if (membership.status !== 'ACTIVE') throw new AppError(409, 'MEMBER_INACTIVE', 'Roles can only be changed for an active member');
     const roles = await tx.role.findMany({
@@ -263,6 +282,6 @@ async function deleteRole(prisma, actorUserId, organisationId, roleId, requestId
 }
 
 module.exports = {
-  listMembers, addMember, updateMemberStatus, setMemberRoles,
+  listMembers, addMember, updateMemberStatus, setMemberRoles, lockOrganisationOwnership,
   listRoles, createRole, updateRole, deleteRole,
 };

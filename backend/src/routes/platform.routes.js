@@ -4,6 +4,8 @@ const { validate } = require('../middleware/validate');
 const { createAuthenticate } = require('../middleware/authenticate');
 const { createRequireTenant, requirePermission } = require('../middleware/tenant');
 const { createOrganisation, listUserOrganisations } = require('../modules/organisations/organisation.service');
+const { mergeSettings } = require('../modules/organisations/organisation.settings');
+const { slugify } = require('../modules/auth/auth.service');
 const { publicUser } = require('../modules/auth/auth.service');
 const { recordAudit } = require('../modules/audit/audit.service');
 const accessService = require('../modules/organisations/access.service');
@@ -63,10 +65,24 @@ function createPlatformRouter(prisma, config) {
     z.object({ name: z.string().trim().min(2).max(180).optional(), settings: z.record(z.string(), z.unknown()).optional() }).strict(), 'body',
   ), async function updateOrganisation(req, res, next) {
     try {
+      // Build the write from an explicit allowlist. Never spread req.body into a
+      // Prisma update: a newly added field would silently become writable.
+      const data = {};
+      if (req.body.name !== undefined) data.name = req.body.name;
+      if (req.body.name !== undefined) data.slug = slugify(req.body.name);
+
       const updated = await prisma.$transaction(async function updateOrganisationTransaction(tx) {
+        if (req.body.settings !== undefined) {
+          // Merge over the stored value so a partial PATCH cannot wipe other keys.
+          const current = await tx.organisation.findUnique({
+            where: { id: req.tenant.id },
+            select: { settings: true },
+          });
+          data.settings = mergeSettings(current ? current.settings : {}, req.body.settings);
+        }
         const organisation = await tx.organisation.update({
           where: { id: req.tenant.id },
-          data: req.body,
+          data,
         });
         await recordAudit(tx, {
           organisationId: req.tenant.id,
@@ -75,7 +91,7 @@ function createPlatformRouter(prisma, config) {
           entityType: 'organisation',
           entityId: organisation.id,
           requestId: req.requestId,
-          metadata: { changedFields: Object.keys(req.body) },
+          metadata: { changedFields: Object.keys(data) },
         });
         return organisation;
       });

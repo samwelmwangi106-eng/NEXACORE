@@ -1,6 +1,8 @@
 # NexaCore
 
-NexaCore is a multi-tenant SaaS platform foundation built as a modular monolith. The shared platform layer currently covers accounts, organisations, membership/roles, invitations, platform-level administration, audit records, and queued email. School, SACCO, Clinic, and Rentals workflows are **not implemented** and are not part of this phase. No Kenyan legal or regulatory compliance has been assessed or certified.
+NexaCore is a multi-tenant SaaS platform built as a modular monolith. The shared platform layer covers accounts, organisations, membership/roles, invitations, platform-level administration, audit records, and queued email.
+
+The **School** module is the first industry module and ships as a separable slice on top of the shared platform: an organisation profile carrying school metadata, plus academic years, terms, grade levels, and class sections. It is delivered through its own SQL migration (`202611160002_school_foundation`) and its own route/service/schema files, so it can be enabled or removed per deployment without touching the shared platform migrations. SACCO, Clinic, and Rentals workflows are **not implemented**. No Kenyan legal or regulatory compliance has been assessed or certified.
 
 ## Architecture and tenant boundary
 
@@ -46,7 +48,7 @@ NexaCore is a multi-tenant SaaS platform foundation built as a modular monolith.
    npm run db:deploy
    ```
 
-   `db:deploy` runs the checked-in `prisma/migrations/*/migration.sql` files transactionally through PostgreSQL's `pg` driver, serializes deployments with a PostgreSQL advisory lock, and records checksums in `_prisma_migrations`. This is intentional: in the current Prisma 6.19.3 JS schema-engine adapter configuration, `prisma migrate deploy` fails against PostgreSQL with `Column type 'name' could not be deserialized from the database`. The SQL migration itself and Prisma Client have been exercised against PostgreSQL 17. Do not use `prisma migrate deploy` or `prisma migrate status` with this configuration until the schema-engine adapter limitation is resolved. New schema changes require a reviewed SQL migration and a matching `schema.prisma` update; do not edit already-applied migrations.
+   `db:deploy` runs the checked-in `prisma/migrations/*/migration.sql` files transactionally through PostgreSQL's `pg` driver, serializes deployments with a PostgreSQL advisory lock, and records checksums in `_prisma_migrations`. Migrations are applied in lexical order: `202611160001_platform_foundation` → `202611160002_school_foundation` → `202611160003_permission_invitation_hardening` → `202611160004_outbox_lease_fencing`. The School slice is a separate migration deliberately, so the shared platform history stays independent of any single industry module; the ordering means School must be present in the tree before the hardening migrations run in a fresh environment. This is intentional: in the current Prisma 6.19.3 JS schema-engine adapter configuration, `prisma migrate deploy` fails against PostgreSQL with `Column type 'name' could not be deserialized from the database`. The SQL migration itself and Prisma Client have been exercised against PostgreSQL 17. Do not use `prisma migrate deploy` or `prisma migrate status` with this configuration until the schema-engine adapter limitation is resolved. New schema changes require a reviewed SQL migration and a matching `schema.prisma` update; do not edit already-applied migrations.
 
 4. Run tests and start the API:
 
@@ -56,7 +58,7 @@ NexaCore is a multi-tenant SaaS platform foundation built as a modular monolith.
    npm run dev
    ```
 
-The API listens on `0.0.0.0:4000`; liveness is `GET /health`, API base path is `/api/v1`. The PostgreSQL integration suite starts an isolated PostgreSQL 17 cluster using `embedded-postgres`, applies the checked-in SQL migration, exercises the real Prisma PostgreSQL adapter and tears the cluster down. It does not need a separately running Compose database.
+The API listens on `0.0.0.0:4000`; liveness is `GET /health`, API base path is `/api/v1`. The PostgreSQL integration suite starts an isolated PostgreSQL 17 cluster using `embedded-postgres`, applies every checked-in SQL migration (asserting each one is applied once and then reported as already-applied on re-run), exercises the real Prisma PostgreSQL adapter and tears the cluster down. It does not need a separately running Compose database.
 
 ## Email delivery
 
@@ -110,15 +112,28 @@ All authenticated operations use `Authorization: Bearer <access-token>`. Error r
 | `DELETE /api/v1/organisations/:organisationId/invitations/:invitationId` | Revoke a pending tenant invitation |
 | `POST /api/v1/accept`, `POST /api/v1/signup` | Inspect a valid invitation or create the invited account and membership |
 | `/api/v1/platform/...` | Permission-separated organisation/user administration, platform grants and platform audit access |
+| `/api/v1/organisations/:organisationId/school/profile` | Read (`GET`) or replace (`PUT`) the school profile |
+| `/api/v1/organisations/:organisationId/school/academic-years` | List or create academic years; `PATCH .../:academicYearId` to update |
+| `.../school/academic-years/:academicYearId/terms` | List or create terms; `PATCH .../:termId` to update |
+| `.../school/grade-levels` | List or create grade levels; `PATCH .../:gradeLevelId` to update |
+| `.../school/academic-years/:academicYearId/sections` | List or create class sections; `PATCH .../:sectionId` to update |
+
+School routes require the `school.read` / `school.manage` permissions and are additionally gated on the organisation's industry: any non-`SCHOOL` organisation receives `404 SCHOOL_MODULE_NOT_ENABLED`, so the module is inert for other tenants rather than merely hidden.
 
 Invitation signup is bound to the invitation email, selected organisation and role, and creates a pending account that must still verify its email. Organisation admins cannot assign a role containing permissions they do not have.
 
+An organisation must always retain at least one active owner. Because that guard is a read-then-write, ownership mutations take a per-organisation transaction-scoped advisory lock (`pg_advisory_xact_lock`) so two concurrent suspensions cannot each observe the other owner and both commit. Organisation settings are validated against an allowlist (`src/modules/organisations/organisation.settings.js`) and merged over the stored value rather than replaced, so a partial `PATCH` cannot wipe unrelated settings or introduce unknown keys.
+
 ## Tests and verification evidence
 
-- `npm test`: 43 tests passed in the last full run, including real PostgreSQL tests.
-- `npm run test:integration`: 6 tests passed against PostgreSQL 17 in an isolated embedded cluster. They exercise real authentication and immediate access revocation, membership/tenant isolation, backend role permissions, invitation encryption/email binding/expiry/single use, platform-admin separation, unique identity constraints, and composite foreign-key rejection across tenants.
-- `npx prisma validate` and `npx prisma generate`: passed with Prisma 6.19.3 after the current schema additions.
-- SQL migrations were applied successfully to a fresh real PostgreSQL 17 cluster; the integration runner confirmed the expected tables and queried records through `@prisma/adapter-pg`.
+- `npm test`: 49 of 55 tests pass. The 6 remaining failures are the PostgreSQL integration suite and all share one cause: `@prisma/client did not initialize yet`, because `prisma generate` cannot download its query-engine binary from `binaries.prisma.sh` in the current sandbox. They are an environment blocker, not a code defect.
+- Unit, API, and tenant suites pass in full, including: last-owner protection, permission-escalation refusal, system-role immutability, tenant scoping, outbox encryption/retry/terminal-failure handling, and organisation settings validation.
+- `npm run test:integration` (6 tests, PostgreSQL 17 via `embedded-postgres`) exercises real authentication and immediate access revocation, membership/tenant isolation, backend role permissions, invitation encryption/email binding/expiry/single use, platform-admin separation, unique identity constraints, and composite foreign-key rejection across tenants. **These require a generated Prisma client and are the 6 currently blocked tests.**
+- SQL migrations were verified by applying all four against a fresh real PostgreSQL 17 cluster: each applies once and is reported `already-applied` on a second run.
+- Concurrency invariants were verified directly against PostgreSQL, independent of the Prisma client:
+  - 8 concurrent accepts of one invitation token → exactly 1 winner; replays rejected.
+  - 6 concurrent invitations using case variants of one address → exactly 1 created, 5 rejected (`23505`).
+  - Two owners suspended concurrently → 1 succeeds, 1 blocked, 1 owner retained (after the advisory-lock fix below).
 - `prisma migrate deploy` through Prisma's JS schema engine remains blocked by the adapter deserialization error described above. The checked-in SQL deploy runner is the verified path; do not report native Prisma migration deployment as verified.
 
 ## Audit and sensitive operations
@@ -127,4 +142,4 @@ Audit events cover organisation and account lifecycle, tenant membership/role op
 
 ## Deferred scope
 
-This work preserves the shared modular monolith and does not begin Phase 4. No School, SACCO, Clinic or Rentals product workflow, frontend, payment workflow, independent AI engine, or direct AI database access is included. Additional launch hardening still needed includes independent security/privacy review, delivery-provider operational configuration, production secret management, and broader monitoring/recovery procedures.
+This work preserves the shared modular monolith and does not begin Phase 4. Only the School academic structure (profile, years, terms, grade levels, sections) is implemented; School enrolment, assessment, fees, timetabling, SACCO, Clinic and Rentals workflows, the frontend, payment workflows, an independent AI engine, and direct AI database access are not included. Additional launch hardening still needed includes independent security/privacy review, delivery-provider operational configuration, production secret management, and broader monitoring/recovery procedures.

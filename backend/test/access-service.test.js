@@ -84,3 +84,56 @@ test('system roles cannot be changed or deleted', async function immutableSystem
   await assert.rejects(access.deleteRole(prisma, 'actor', organisationId, roleId, 'request'),
     function immutable(error) { return error.code === 'SYSTEM_ROLE_IMMUTABLE'; });
 });
+
+test('ownership mutations serialize on a per-organisation advisory lock', async function serializeOwnership() {
+  // Regression: the last-owner guard is a read-then-write. Without
+  // serialization, two concurrent suspensions both see the other owner and
+  // both commit, stranding the organisation with no owner.
+  const lockCalls = [];
+  const executeRaw = async function executeRaw(strings) {
+    lockCalls.push(strings.join(''));
+    return 0;
+  };
+  const prisma = {
+    $transaction: async function transaction(callback) {
+      return callback({
+        $executeRaw: executeRaw,
+        organisationMember: {
+          findFirst: async function findFirst() { return ownerMembership(); },
+          update: async function update() { return {}; },
+          findUnique: async function findUnique() { return { ...ownerMembership(), user: {}, assignments: [] }; },
+        },
+        memberRole: {
+          count: async function count() { return 1; },
+          deleteMany: async function deleteMany() { return { count: 1 }; },
+          createMany: async function createMany() { return { count: 1 }; },
+        },
+        role: { findMany: async function findMany() { return [{ id: roleId, name: 'Staff Member', permissions: [] }]; } },
+        auditLog: { create: async function create() { return {}; } },
+      });
+    },
+  };
+
+  await access.updateMemberStatus(prisma, 'actor', organisationId, memberId, 'SUSPENDED', new Set(['Organisation Owner']), 'request');
+  assert.equal(lockCalls.length, 1, 'status update must take the ownership lock');
+  assert.match(lockCalls[0], /pg_advisory_xact_lock/, 'must use a transaction-scoped advisory lock');
+
+  lockCalls.length = 0;
+  await access.setMemberRoles(prisma, 'actor', organisationId, memberId, [roleId], new Set(['roles.manage']), new Set(['Organisation Owner']), 'request');
+  assert.equal(lockCalls.length, 1, 'role assignment must take the ownership lock');
+});
+
+test('ownership guard still works for clients without raw SQL support', async function lockOptional() {
+  const tx = {
+    organisationMember: {
+      findFirst: async function findFirst() { return ownerMembership(); },
+      update: async function update() { throw new Error('must not update'); },
+    },
+    memberRole: { count: async function count() { return 0; } },
+  };
+  const prisma = { $transaction: async function transaction(callback) { return callback(tx); } };
+  await assert.rejects(
+    access.updateMemberStatus(prisma, 'actor', organisationId, memberId, 'SUSPENDED', new Set(['Organisation Owner']), 'request'),
+    function lastOwner(error) { return error.code === 'LAST_OWNER_REQUIRED'; },
+  );
+});
