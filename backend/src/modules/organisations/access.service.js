@@ -1,6 +1,7 @@
 const { normalizeEmail } = require('../../lib/security');
 const { AppError } = require('../../lib/errors');
 const { recordAudit } = require('../audit/audit.service');
+const { lockOrganisation } = require('../../lib/tenant-lock');
 
 function publicMember(member) {
   return {
@@ -76,24 +77,24 @@ async function getMembership(tx, organisationId, memberId) {
  * Without serialization two concurrent suspensions can both observe the other
  * owner as present and both commit, leaving an organisation with no owner.
  *
- * `pg_advisory_xact_lock` is transaction-scoped and released automatically on
- * COMMIT/ROLLBACK. The lock is keyed on a hash of the organisation id so
- * unrelated tenants never contend with each other.
- *
- * This FAILS CLOSED. `$executeRaw` is a method on the PrismaClient base class,
- * so a real client always has it; an absent method means a misconfigured or
- * stubbed client, never a valid production state. Proceeding without the lock
- * would silently reintroduce the race, so we refuse the mutation instead.
+ * The lock itself lives in `src/lib/tenant-lock.js` because invitation
+ * acceptance and organisation suspension must take the *same* per-organisation
+ * lock to close the TOCTOU race between them. This wrapper keeps the
+ * ownership-specific error code that existing callers and tests assert on.
  */
 async function lockOrganisationOwnership(tx, organisationId) {
-  if (!tx || typeof tx.$executeRaw !== 'function') {
-    throw new AppError(
-      500,
-      'OWNERSHIP_LOCK_UNAVAILABLE',
-      'Ownership changes require a client that can take an advisory lock; the operation was refused rather than applied unsafely',
-    );
+  try {
+    await lockOrganisation(tx, organisationId);
+  } catch (error) {
+    if (error && error.code === 'TENANT_LOCK_UNAVAILABLE') {
+      throw new AppError(
+        500,
+        'OWNERSHIP_LOCK_UNAVAILABLE',
+        'Ownership changes require a client that can take an advisory lock; the operation was refused rather than applied unsafely',
+      );
+    }
+    throw error;
   }
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${organisationId}::text, 0))`;
 }
 
 async function ensureOwnerNotRemoved(tx, organisationId, membership, willRemainOwner) {

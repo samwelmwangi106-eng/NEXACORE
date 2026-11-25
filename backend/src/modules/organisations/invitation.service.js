@@ -3,6 +3,7 @@ const { AppError } = require('../../lib/errors');
 const { hashRefreshSecret, normalizeEmail } = require('../../lib/security');
 const { enqueueEmail } = require('../notifications/outbox.service');
 const { recordAudit } = require('../audit/audit.service');
+const { lockOrganisation } = require('../../lib/tenant-lock');
 
 const INVITATION_TTL_MS = 72 * 60 * 60 * 1000;
 
@@ -86,12 +87,28 @@ async function acceptInvitation(prisma, config, invitationToken, registration) {
   if (normalizeEmail(registration.email) !== invitation.email) {
     throw new AppError(400, 'INVITATION_EMAIL_MISMATCH', 'The account email must match the invitation');
   }
-  // A suspended organisation is not eligible to gain new members, even with a
-  // valid unexpired token. Checked before the transaction so no partial writes occur.
+  // Fast-path refusal for an organisation that is already suspended. This is a
+  // courtesy check that avoids opening a transaction; it is NOT the guarantee.
+  // The authoritative check runs inside the transaction under the organisation
+  // lock (see below), because a suspension can commit between this read and the
+  // transaction's first write.
   if (!invitation.organisation || invitation.organisation.status !== 'ACTIVE') {
     throw new AppError(403, 'ORGANISATION_NOT_ELIGIBLE', 'This organisation is not currently accepting new members');
   }
   return prisma.$transaction(async function acceptInvitationTransaction(tx) {
+    // Close the check-then-act window: `changeOrganisationStatus` takes the same
+    // per-organisation advisory lock before flipping the status, so once we hold
+    // it the status cannot change until we commit. Re-reading inside the lock
+    // makes "suspended organisation cannot gain membership" a real guarantee
+    // rather than a best-effort check.
+    await lockOrganisation(tx, invitation.organisationId);
+    const current = await tx.organisation.findUnique({
+      where: { id: invitation.organisationId },
+      select: { status: true },
+    });
+    if (!current || current.status !== 'ACTIVE') {
+      throw new AppError(403, 'ORGANISATION_NOT_ELIGIBLE', 'This organisation is not currently accepting new members');
+    }
     const consumed = await tx.organisationInvitation.updateMany({
       where: { id: invitation.id, acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } },
       data: { acceptedAt: new Date() },

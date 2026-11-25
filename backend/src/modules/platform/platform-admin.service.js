@@ -1,5 +1,6 @@
 const { AppError } = require('../../lib/errors');
 const { recordAudit } = require('../audit/audit.service');
+const { lockOrganisation } = require('../../lib/tenant-lock');
 
 async function listOrganisations(prisma, limit) {
   return prisma.organisation.findMany({
@@ -11,6 +12,11 @@ async function listOrganisations(prisma, limit) {
 
 async function changeOrganisationStatus(prisma, actorUserId, organisationId, status, requestId) {
   return prisma.$transaction(async function updateOrganisationStatusTransaction(tx) {
+    // Take the same per-organisation advisory lock that invitation acceptance
+    // takes, so a status change cannot interleave with a membership-creating
+    // transaction. Without this, acceptance can read ACTIVE, a suspension can
+    // commit, and acceptance can still create the membership.
+    await lockOrganisation(tx, organisationId);
     const organisation = await tx.organisation.findUnique({ where: { id: organisationId } });
     if (!organisation) throw new AppError(404, 'ORGANISATION_NOT_FOUND', 'Organisation not found');
     const updated = await tx.organisation.update({ where: { id: organisationId }, data: { status } });
