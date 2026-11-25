@@ -194,10 +194,27 @@ They are the `test/integration/postgres.integration.test.js` suite, blocked sole
 | Item | Value |
 |---|---|
 | Branch | `arena/8c9954b6-nexacore` |
+| Commit | `a4eaa94bbf02785cacfda2ce8c7810ff06e82051` |
 | Parent commit | `c15dc9ee737bab538e94d7318246906b55fdeab1` |
-| Working tree | clean after commit |
+| Remote tip | `a4eaa94bbf02785cacfda2ce8c7810ff06e82051` (matches local) |
+| Push | `c15dc9e..a4eaa94` → `origin/arena/8c9954b6-nexacore` |
+| Working tree | clean |
 
-The exact new commit SHA and the remote push confirmation are recorded at the end of this message, after the commit is created.
+Files in `a4eaa94` (9 files, +1096 / −23):
+
+```
+README.md                                          |   7 +-
+STAGE_C_CONCURRENCY_REVIEW.md                      | 206 ++++++++++
+backend/README.md                                  |  15 +-
+backend/src/lib/tenant-lock.js                     |  31 ++
+backend/src/modules/organisations/access.service.js|  31 +-
+backend/src/modules/organisations/invitation.service.js | 21 +-
+backend/src/modules/platform/platform-admin.service.js  |  6 +
+backend/test-support/real-pg-harness.js            | 375 ++++++++++
+backend/test/concurrency-postgres.test.js          | 427 +++++++++++
+```
+
+Commit chain: `8393f14` → `5926380` → `3afface` → `4e21686` → `c15dc9e` → `a4eaa94`.
 
 ---
 
