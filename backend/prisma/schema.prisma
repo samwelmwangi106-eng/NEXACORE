@@ -156,7 +156,7 @@ model MemberRole {
   roleId         String             @map("role_id") @db.Uuid
   organisation   Organisation       @relation(fields: [organisationId], references: [id], onDelete: Cascade)
   member         OrganisationMember @relation(fields: [memberId, organisationId], references: [id, organisationId], onDelete: Cascade)
-  role           Role               @relation(fields: [roleId, organisationId], references: [id], onDelete: Cascade)
+  role           Role               @relation(fields: [roleId, organisationId], references: [id, organisationId], onDelete: Cascade)
 
   @@id([memberId, roleId])
   @@index([organisationId, roleId])
@@ -214,7 +214,7 @@ model OrganisationInvitation {
   revokedAt      DateTime?     @map("revoked_at") @db.Timestamptz(6)
   createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
   organisation   Organisation  @relation(fields: [organisationId], references: [id], onDelete: Cascade)
-  role           Role          @relation(fields: [roleId, organisationId], references: [id], onDelete: Restrict)
+  role           Role          @relation(fields: [roleId, organisationId], references: [id, organisationId], onDelete: Restrict)
   invitedBy      User          @relation("InvitationActor", fields: [invitedById], references: [id], onDelete: Restrict)
 
   @@index([organisationId, email, expiresAt])
