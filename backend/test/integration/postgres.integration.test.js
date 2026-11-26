@@ -9,6 +9,7 @@ const EmbeddedPostgres = require('embedded-postgres').default || require('embedd
 const request = require('supertest');
 const { createPrismaClient } = require('../../src/lib/prisma');
 const { applyMigrations } = require('../../src/lib/migrations');
+const { assertLoopbackTarget } = require('../../test-support/assert-loopback-target');
 const { createApp } = require('../../src/app');
 const { createOrganisation } = require('../../src/modules/organisations/organisation.service');
 const { hashPassword } = require('../../src/lib/security');
@@ -79,6 +80,9 @@ test.before(async function startPostgresIntegrationDatabase() {
   await postgres.start();
   await postgres.createDatabase('nexacore_test');
   connectionString = `postgresql://nexacore_test:local-test-only@127.0.0.1:${port}/nexacore_test`;
+  // Refuse to apply migrations unless the spawned cluster is provably loopback and
+  // distinct from any ambient DATABASE_URL. Runs before the first connection.
+  assertLoopbackTarget(connectionString, 'postgres.integration');
   const migrationClient = new Client({ connectionString });
   await migrationClient.connect();
   try {

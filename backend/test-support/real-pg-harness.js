@@ -24,6 +24,7 @@ const crypto = require('node:crypto');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const EmbeddedPostgres = require('embedded-postgres').default || require('embedded-postgres');
 const { applyMigrations } = require('../src/lib/migrations');
+const { assertLoopbackTarget } = require('./assert-loopback-target');
 
 const STRING = { scalarType: 'string', arity: 'scalar' };
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'prisma', 'migrations');
@@ -95,6 +96,9 @@ async function startPostgres() {
   await pg.start();
   await pg.createDatabase('nexacore_test');
   const connectionString = 'postgresql://nexacore_test:local-test-only@127.0.0.1:' + port + '/nexacore_test';
+  // Refuse to proceed unless the cluster we just spawned is provably loopback and
+  // distinct from any ambient DATABASE_URL. Checked before migrations are applied.
+  assertLoopbackTarget(connectionString, 'concurrency-postgres harness');
   const { Client } = require('pg');
   const setup = new Client({ connectionString });
   await setup.connect();
